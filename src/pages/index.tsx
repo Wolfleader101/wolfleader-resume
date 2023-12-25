@@ -1,16 +1,38 @@
+/* eslint-disable @typescript-eslint/unbound-method */
 "use client";
 import Head from "next/head";
 import { Stage, Sprite, useTick, useApp } from "@pixi/react";
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import * as PIXI from "pixi.js";
 import { v4 } from "uuid";
 import Vec2 from "~/utils/Vec2";
+import useECS, { ComponentType, Entity } from "~/hooks/useECS";
 
-interface IdentifiableDisplayObject extends PIXI.DisplayObject {
-  id: string;
+class TransformComp {
+  pos: Vec2;
+  rotation: number;
+  scale: Vec2;
+
+  constructor(pos: Vec2, rotation: number, scale: Vec2) {
+    this.pos = pos;
+    this.rotation = rotation;
+    this.scale = scale;
+  }
 }
 
-type IdentifyableSprite = IdentifiableDisplayObject & PIXI.Sprite;
+class RigidBodyComp {
+  mass: number;
+  force: Vec2;
+  velocity: Vec2;
+  hasGravity: boolean;
+
+  constructor(mass: number, force: Vec2, velocity: Vec2, hasGravity = false) {
+    this.mass = mass;
+    this.force = force;
+    this.velocity = velocity;
+    this.hasGravity = hasGravity;
+  }
+}
 
 // Define a type for the state
 type State = {
@@ -22,7 +44,6 @@ type State = {
   force: Vec2;
   velocity: Vec2;
   acceleration: Vec2;
-  id: string;
 };
 
 // Define a type for the action
@@ -32,11 +53,11 @@ type Action =
   | { type: "anchor"; anchor: number }
   | { type: "apply_forces"; tick_rate: number }
   | { type: "update"; dt: number }
-  | { type: "collide_edge"; axis: "x" | "y" }
-  | { type: "detect_collisions"; other_entities: IdentifiableDisplayObject[] };
+  | { type: "collide_edge"; axis: "x" | "y" };
 
 const speed = 0.01; // Speed of the bunny
 const PHYSICS_TIME_STEP = 1 / 60;
+const VELOCITY_DAMPING = 0.998;
 
 const reducer = (state: State, action: Action): State => {
   switch (action.type) {
@@ -94,18 +115,18 @@ const reducer = (state: State, action: Action): State => {
         };
       }
       return state;
-
-    case "detect_collisions":
-      action.other_entities.forEach((entity) => {
-        if (entity.id == state.id) return;
-      });
-      return state;
     default:
       return state;
   }
 };
 
-const Bunny = () => {
+type BunnyProps = {
+  entity: Entity;
+};
+const Bunny = ({ entity }: BunnyProps) => {
+  const addComponent = useECS((state) => state.addComponent);
+  const getComponent = useECS((state) => state.getComponent);
+
   const [motion, update] = useReducer(reducer, {
     x: 100,
     y: 200,
@@ -115,7 +136,6 @@ const Bunny = () => {
     force: new Vec2(0, 0),
     velocity: new Vec2(0, 0),
     acceleration: new Vec2(0, 0),
-    id: v4(),
   });
 
   const keysPressed = useRef<Record<string, boolean>>({});
@@ -127,7 +147,13 @@ const Bunny = () => {
   const canvasWidth = app.renderer.width;
   const canvasHeight = app.renderer.height;
 
-  const bunnyRef = useRef<IdentifyableSprite>(null);
+  const [transform, setTransform] = useState({
+    pos: new Vec2(0, 0),
+    rotation: 0,
+    scale: new Vec2(1, 1),
+  });
+
+  const bunnyRef = useRef<PIXI.Sprite>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -141,6 +167,22 @@ const Bunny = () => {
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
 
+    addComponent(
+      TransformComp as ComponentType<TransformComp>,
+      entity.id,
+      new TransformComp(
+        new Vec2(motion.x, motion.y),
+        motion.rotation,
+        new Vec2(1, 1),
+      ),
+    );
+
+    addComponent(
+      RigidBodyComp as ComponentType<RigidBodyComp>,
+      entity.id,
+      new RigidBodyComp(10, new Vec2(0, 0), new Vec2(0, 0)),
+    );
+
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
@@ -148,65 +190,105 @@ const Bunny = () => {
   }, []);
 
   useTick((deltaTime) => {
+    const transform = getComponent(
+      TransformComp as ComponentType<TransformComp>,
+      entity.id,
+    );
+    if (!transform) return;
+
+    // transform.pos.x += 1.0 * deltaTime;
+
+    const rigidBody = getComponent(
+      RigidBodyComp as ComponentType<RigidBodyComp>,
+      entity.id,
+    );
+
+    if (!rigidBody) return;
+
     physicsAccumulator.current += deltaTime;
 
     while (physicsAccumulator.current >= PHYSICS_TIME_STEP) {
       // apply forces
-      update({ type: "apply_forces", tick_rate: PHYSICS_TIME_STEP });
+      if (rigidBody.hasGravity) {
+        const weight = rigidBody.mass * 9.82; // POSITIVE Y IS DOWN
+        rigidBody.force = rigidBody.force.add(new Vec2(0, weight));
+      }
+
+      const linearAcceleration = rigidBody.force.div(rigidBody.mass);
+
+      // v += a * dt
+      rigidBody.velocity = rigidBody.velocity.add(
+        linearAcceleration.mul(PHYSICS_TIME_STEP),
+      );
+
+      // v *= damping
+      rigidBody.velocity = rigidBody.velocity.mul(VELOCITY_DAMPING);
+
+      // pos += v * dt
+      transform.pos = transform.pos.add(
+        rigidBody.velocity.mul(PHYSICS_TIME_STEP),
+      );
+
+      rigidBody.force = new Vec2(0, 0);
 
       // apply user input
       let dx = 0;
       let dy = 0;
-      if (keysPressed.current.w) dy += speed;
-      if (keysPressed.current.s) dy -= speed;
+      if (keysPressed.current.w) dy -= speed;
+      if (keysPressed.current.s) dy += speed;
       if (keysPressed.current.a) dx -= speed;
       if (keysPressed.current.d) dx += speed;
 
       if (dx !== 0 || dy !== 0) {
-        update({ type: "move", dx, dy });
+        rigidBody.velocity = rigidBody.velocity.add(new Vec2(dx, dy));
       }
 
-      // detect collisions
+      console.log(rigidBody.velocity);
 
-      if (bunnyRef.current) {
-        const bunnyBounds = bunnyRef.current.getBounds();
+      //   // detect collisions
 
-        // Check right and left bounds
-        if (
-          bunnyBounds.x + bunnyBounds.width > canvasWidth ||
-          bunnyBounds.x < 0
-        ) {
-          update({ type: "collide_edge", axis: "x" });
-        }
+      //   if (bunnyRef.current) {
+      //     const bunnyBounds = bunnyRef.current.getBounds();
 
-        // Check bottom and top bounds
-        if (
-          bunnyBounds.y + bunnyBounds.height > canvasHeight ||
-          bunnyBounds.y < 0
-        ) {
-          update({ type: "collide_edge", axis: "y" });
-        }
-      }
+      //     // Check right and left bounds
+      //     if (
+      //       bunnyBounds.x + bunnyBounds.width > canvasWidth ||
+      //       bunnyBounds.x < 0
+      //     ) {
+      //       update({ type: "collide_edge", axis: "x" });
+      //     }
 
-      // resolve collisions
+      //     // Check bottom and top bounds
+      //     if (
+      //       bunnyBounds.y + bunnyBounds.height > canvasHeight ||
+      //       bunnyBounds.y < 0
+      //     ) {
+      //       update({ type: "collide_edge", axis: "y" });
+      //     }
+      //   }
+
+      //   // resolve collisions
 
       // decrease accumulator
       physicsAccumulator.current -= PHYSICS_TIME_STEP;
     }
 
-    update({ type: "update", dt: deltaTime });
+    setTransform((prev) => ({ ...prev, ...transform }));
   });
 
   return (
     <Sprite
       ref={bunnyRef}
       image="https://pixijs.io/pixi-react/img/bunny.png"
-      {...motion}
+      // {...motion}
+      x={transform.pos.x}
+      y={transform.pos.y}
     />
   );
 };
 
 export default function Home() {
+  const createEntity = useECS((state) => state.createEntity);
   return (
     <>
       <Head>
@@ -216,7 +298,7 @@ export default function Home() {
       </Head>
       <main className="flex min-h-screen flex-col items-center justify-center bg-slate-800">
         <Stage width={900} height={900} options={{ backgroundAlpha: 1 }}>
-          <Bunny />
+          <Bunny entity={createEntity()} />
         </Stage>
       </main>
     </>

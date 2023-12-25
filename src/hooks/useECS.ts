@@ -1,9 +1,9 @@
 import { v4 } from "uuid";
 import { create } from "zustand";
 
-type ComponentType<T> = new (...args: unknown[]) => T;
+export type ComponentType<T> = new (...args: unknown[]) => T;
 
-interface Entity {
+export interface Entity {
   id: string;
 }
 
@@ -81,6 +81,7 @@ const useECS = create<EntityList>((set, get) => ({
     set((state) => {
       const entityId =
         typeof entityOrId === "string" ? entityOrId : entityOrId.id;
+
       const newComponents = new Map(state.components);
       const componentsOfType =
         newComponents.get(componentType) ?? new Map<string, unknown>();

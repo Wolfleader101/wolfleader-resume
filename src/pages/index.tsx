@@ -1,45 +1,16 @@
 "use client";
 import Head from "next/head";
-import { Stage, Container, Sprite, useTick, useApp } from "@pixi/react";
+import { Stage, Sprite, useTick, useApp } from "@pixi/react";
 import { useEffect, useReducer, useRef } from "react";
 import * as PIXI from "pixi.js";
+import { v4 } from "uuid";
+import Vec2 from "~/utils/Vec2";
 
-class Vec2 {
-  constructor(
-    public x: number,
-    public y: number,
-  ) {}
-
-  add(vec: Vec2) {
-    return new Vec2(this.x + vec.x, this.y + vec.y);
-  }
-
-  sub(vec: Vec2) {
-    return new Vec2(this.x - vec.x, this.y - vec.y);
-  }
-
-  mul(scalar: number) {
-    return new Vec2(this.x * scalar, this.y * scalar);
-  }
-
-  div(scalar: number) {
-    return new Vec2(this.x / scalar, this.y / scalar);
-  }
-
-  mag() {
-    return Math.sqrt(this.x * this.x + this.y * this.y);
-  }
-
-  norm() {
-    return this.div(this.mag());
-  }
-
-  dot(vec: Vec2) {
-    return this.x * vec.x + this.y * vec.y;
-  }
+interface IdentifiableDisplayObject extends PIXI.DisplayObject {
+  id: string;
 }
 
-const PHYSICS_TIME_STEP = 1 / 60;
+type IdentifyableSprite = IdentifiableDisplayObject & PIXI.Sprite;
 
 // Define a type for the state
 type State = {
@@ -51,6 +22,7 @@ type State = {
   force: Vec2;
   velocity: Vec2;
   acceleration: Vec2;
+  id: string;
 };
 
 // Define a type for the action
@@ -60,9 +32,11 @@ type Action =
   | { type: "anchor"; anchor: number }
   | { type: "apply_forces"; tick_rate: number }
   | { type: "update"; dt: number }
-  | { type: "collide_edge"; axis: "x" | "y" };
+  | { type: "collide_edge"; axis: "x" | "y" }
+  | { type: "detect_collisions"; other_entities: IdentifiableDisplayObject[] };
 
 const speed = 0.01; // Speed of the bunny
+const PHYSICS_TIME_STEP = 1 / 60;
 
 const reducer = (state: State, action: Action): State => {
   switch (action.type) {
@@ -120,6 +94,12 @@ const reducer = (state: State, action: Action): State => {
         };
       }
       return state;
+
+    case "detect_collisions":
+      action.other_entities.forEach((entity) => {
+        if (entity.id == state.id) return;
+      });
+      return state;
     default:
       return state;
   }
@@ -135,6 +115,7 @@ const Bunny = () => {
     force: new Vec2(0, 0),
     velocity: new Vec2(0, 0),
     acceleration: new Vec2(0, 0),
+    id: v4(),
   });
 
   const keysPressed = useRef<Record<string, boolean>>({});
@@ -145,6 +126,8 @@ const Bunny = () => {
 
   const canvasWidth = app.renderer.width;
   const canvasHeight = app.renderer.height;
+
+  const bunnyRef = useRef<IdentifyableSprite>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -163,8 +146,6 @@ const Bunny = () => {
       window.removeEventListener("keyup", handleKeyUp);
     };
   }, []);
-
-  const bunnyRef = useRef<PIXI.Sprite>(null);
 
   useTick((deltaTime) => {
     physicsAccumulator.current += deltaTime;
